@@ -1,0 +1,3 @@
+[submodule "marus-core"]
+	path = marus-core
+	url = https://github.com/NTU-Mecatron/marus-core.git
