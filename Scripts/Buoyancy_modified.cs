@@ -8,7 +8,7 @@ public class Buoyancy_modified : MonoBehaviour
 
     [Tooltip("Maximum buoyancy force when the object is fully submerged (in kg)." +
         "Adjust this to be higher than rb.mass to make it buoyant, lesser to make it sink.")]
-    [SerializeField] float totalBuoyancy;
+    [SerializeField] float totalBuoyancy = 15.12f;
 
     Rigidbody rb;
     BoxCollider boxCollider;

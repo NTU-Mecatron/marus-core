@@ -13,7 +13,7 @@ public class DepthROS_modified : MonoBehaviour
     double depth;
 
     ROSConnection ros;
-    [SerializeField] string topic = "/sensor/depth";
+    [SerializeField] string topic = "/pixhawk/vehicle_status/depth";
     [SerializeField] float publishFrequency = 20f;
     double _lastPublishTime = 0;
     float publishPeriodSeconds => 1 / publishFrequency;

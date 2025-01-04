@@ -1,0 +1,5 @@
+# Mode must be MANUAL, ACRO, STABILIZE, ALT_HOLD or GUIDED
+
+string mode # string mode representation or integer
+---
+bool is_success # Mode known/parsed correctly and SET_MODE are sent

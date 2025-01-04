@@ -1,14 +1,12 @@
 using Marus.Networking;
 using NWH.Common.Utility;
-using RosMessageTypes.CommonMsgSrv;
-using Actionlib = RosMessageTypes.Actionlib;
+using RosMessageTypes.Pixhawk;
 using RosMessageTypes.Std;
 using System.Collections;
 using System.Collections.Generic;
 using Unity.Robotics.ROSTCPConnector;
 using UnityEngine;
-using UnityEngine.Rendering.HighDefinition;
-using RosMessageTypes.Actionlib;
+
 
 public class Pixhawk : MonoBehaviour
 {
@@ -21,6 +19,8 @@ public class Pixhawk : MonoBehaviour
     new Rigidbody rigidbody;
     Vector3 forceVector = Vector3.zero;
     Vector3 torqueVector = Vector3.zero;
+    Vector3 targetForceVector = Vector3.zero;
+    Vector3 targetTorqueVector = Vector3.zero;
 
     ROSConnection ros;
     [SerializeField] string mainTopic = "/pixhawk/control/manual_control_normalized";
@@ -28,6 +28,13 @@ public class Pixhawk : MonoBehaviour
     [SerializeField] string deltaHeadingTopic = "/pixhawk/control/set_target_heading_delta";
     [SerializeField] string depthTopic = "/pixhawk/control/set_target_depth";
     [SerializeField] string deltaDepthTopic = "/pixhawk/control/set_target_depth_delta";
+    [SerializeField] string armService = "/pixhawk/cmd/arming";
+    [SerializeField] string setModeService = "/pixhawk/cmd/set_mode";
+    string mainFilteredTopic = "/pixhawk/control/manual_control_filtered_unity";
+    string xControlTopic = "/pixhawk/control/manual_control_x";
+    string yControlTopic = "/pixhawk/control/manual_control_y";
+    string zControlTopic = "/pixhawk/control/manual_control_z";
+    string rControlTopic = "/pixhawk/control/manual_control_r";
 
     string headingTopicResult;
     string depthTopicResult;
@@ -52,6 +59,7 @@ public class Pixhawk : MonoBehaviour
 
     [SerializeField] float verticalDragCoefficient = 10f;
     [SerializeField] float yawDragCoefficient = 1.6f;
+    [SerializeField] float minControlThreshold = 0.1f;
 
     void Start()
     {
@@ -62,6 +70,21 @@ public class Pixhawk : MonoBehaviour
 
         ros = ROSConnection.GetOrCreateInstance();
         ros.Subscribe<Float32MultiArrayMsg>(mainTopic, MainControlCallback);
+        ros.Subscribe<Float32Msg>(xControlTopic, msg => targetForceVector.z = msg.data);
+        ros.Subscribe<Float32Msg>(yControlTopic, msg => targetForceVector.x = msg.data);
+        ros.Subscribe<Float32Msg>(zControlTopic, msg =>
+        {
+            targetForceVector.y = msg.data;
+            pauseDepthHold = Mathf.Abs(msg.data) > 0.1f;
+        });
+        ros.Subscribe<Float32Msg>(rControlTopic, msg =>
+        {
+            targetTorqueVector.y = msg.data;
+            pauseHeadingHold = Mathf.Abs(msg.data) > 0.1f;
+        });
+        ros.RegisterPublisher<ManualControlMsg>(mainFilteredTopic);
+        ros.ImplementService<EnableArmDisarmRequest, EnableArmDisarmResponse>(armService, ArmDisarmCallback);
+        ros.ImplementService<SetModeRequest, SetModeResponse>(setModeService, SetModeCallback);
 
         RegisterActionServers();
     }
@@ -152,6 +175,17 @@ public class Pixhawk : MonoBehaviour
             }
         }
 
+        // Calculate filtered control
+        forceVector = IncrementVector3(forceVector, targetForceVector, 0.007f);
+        torqueVector = IncrementVector3(torqueVector, targetTorqueVector, 0.007f);
+        ManualControlMsg manualControlMsg = new ManualControlMsg
+        {
+            x = forceVector.z,
+            y = torqueVector.x,
+            z = forceVector.y,
+            r = torqueVector.y
+        };
+        ros.Publish(mainFilteredTopic, manualControlMsg);
         rigidbody.AddRelativeForce(forceVector * force);
         rigidbody.AddRelativeTorque(torqueVector * torque);
 
@@ -174,15 +208,14 @@ public class Pixhawk : MonoBehaviour
         float sideway = msg.data[1];
         float up = msg.data[2];
         float yaw = msg.data[3];
+        forward = (Mathf.Abs(forward) < minControlThreshold) ? 0f : forward;
+        sideway = (Mathf.Abs(sideway) < minControlThreshold) ? 0f : sideway;
+        up = (Mathf.Abs(up) < minControlThreshold) ? 0f : up;
+        yaw = (Mathf.Abs(yaw) < minControlThreshold) ? 0f : yaw;
         Debug.Log("Forward: " + forward + " Sideway: " + sideway + " Up: " + up + " Yaw: " + yaw);
-        forceVector = new Vector3(sideway, up, forward);
-        torqueVector = new Vector3(0, yaw, 0);
+        targetForceVector = new Vector3(sideway, up, forward);
+        targetTorqueVector = new Vector3(0, yaw, 0);
 
-        if (up != 0f) pauseDepthHold = true;
-        else pauseDepthHold = false;
-
-        if (yaw != 0f) pauseHeadingHold = true;
-        else pauseHeadingHold = false;
     }
 
     void HeadingControlCallback(Float32Msg msg)
@@ -215,5 +248,46 @@ public class Pixhawk : MonoBehaviour
         depthSetpoint = rigidbody.position.y + msg.data;
         Debug.Log("Received command to change depth by " + msg.data + " meter");
         depthTopicResult = deltaDepthTopic + "/result";
+    }
+
+    EnableArmDisarmResponse ArmDisarmCallback(EnableArmDisarmRequest msg)
+    {
+        isArm = msg.is_enable;
+        Debug.Log("Received command to " + (isArm ? "arm" : "disarm"));
+
+        return new EnableArmDisarmResponse { is_success = true };
+    }
+
+    SetModeResponse SetModeCallback(SetModeRequest msg)
+    {
+        string mode = msg.mode;
+        Debug.Log("Received command to set mode to " + msg.mode);
+        SetModeResponse response = new SetModeResponse { is_success = true };
+        switch (mode)
+        {
+            case "MANUAL":
+                headingHoldMode = false;
+                depthHoldMode = false;
+                return response;
+            case "STABILIZE":
+                headingHoldMode = true;
+                depthHoldMode = false;
+                return response;
+            case "ALT_HOLD":
+                headingHoldMode = true;
+                depthHoldMode = true;
+                return response;
+            default:
+                Debug.Log("Mode not support in Unity");
+                return new SetModeResponse { is_success = false };
+        }
+    }
+
+    Vector3 IncrementVector3(Vector3 currentVector, Vector3 targetVector, float increment)
+    {
+        currentVector.x = Mathf.MoveTowards(currentVector.x, targetVector.x, increment);
+        currentVector.y = Mathf.MoveTowards(currentVector.y, targetVector.y, increment);
+        currentVector.z = Mathf.MoveTowards(currentVector.z, targetVector.z, increment);
+        return currentVector;
     }
 }
